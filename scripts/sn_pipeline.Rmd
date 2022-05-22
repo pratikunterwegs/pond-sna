@@ -1,0 +1,106 @@
+---
+editor_options: 
+  chunk_output_type: console
+---
+
+# Build reads data to networks pipeline
+
+```{r}
+# load libraries
+library(readr)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(pondr)
+
+# for plotting
+library(ggplot2)
+library(patchwork)
+```
+
+Read file names in data folder.
+
+```{r}
+files = list.files("data", pattern = "CSV", full.names = TRUE)
+
+# read fish data
+fish_data = read_excel("data/Data System 1.xlsx")
+```
+
+```{r}
+# read data and rename columns
+data = lapply(files, read_delim, delim = ";")
+data = lapply(data, function(df) {
+  rename(
+    df,
+    date = Date, time = Time, antenna = `Unit number`,
+    id = `Transponder code`
+  )
+})
+
+# clean the data using a pondr function
+data = lapply(data, pondr::pr_clean_data, block_ref_df = fish_data)
+```
+
+It is very important to clean the data before making networks, as the network construction fails when it finds nodes (fish) in the edge list, that are not in the node list. This happens when there are errors in tag reading, introducing a new tag code into the edgelist that is not among the tags in the node data.
+
+```{r}
+# bind columns and split by date
+data_nt = bind_rows(data) %>%
+  mutate(
+    date = date(time)
+  ) %>%
+  nest_by(
+    date
+  )
+
+# get daily networks, time bin is 5 seconds by default
+networks = lapply(
+  data_nt$data, pr_make_network, block_ref_df = fish_data
+)
+```
+
+```{r}
+# make a custom layout that is fixed between plots
+# this must be based on an initial network - choose one
+layout = igraph::layout.kamada.kawai(networks[[1]])
+
+# make plots and wrap
+nt_plots = Map(
+  networks, data_nt$date,
+  f = function(n, d) {
+    pr_plot_network(
+      network = n,
+      colour_by = length_mm,
+      wt_lim = 150,
+      layout = layout
+    ) +
+      scico::scale_fill_scico(
+        palette = "hawaii"
+      )+
+    labs(
+      title = d,
+      fill = "Length (mm)"
+    )+
+    theme(
+      legend.position = "top",
+      legend.key.height = unit(2, "mm")
+    )
+  }
+)
+
+# wrap all plots
+figure = wrap_plots(
+  nt_plots,
+  guides = "collect"
+) &
+  theme(
+    legend.position = "top"
+  )
+
+# save figure
+ggsave(
+  filename = "figures/fig_show_sn.png"
+)
+```
