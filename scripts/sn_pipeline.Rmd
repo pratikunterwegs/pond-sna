@@ -88,79 +88,142 @@ data_nt = bind_rows(data) %>%
     date, system
   )
 
+# add colum for id data
+data_nt = mutate(
+  data_nt,
+  node_data = list(
+    fish_data[[system]]
+  )
+)
+
 # get an example daily network, time bin is 5 seconds by default
-networks = lapply(data_nt$data, pr_make_network, 
-                  block_ref_df = fish_data, time_bin = "5 minutes")
-```
-
-## Getting Zero Weight Interactions
-
-```{r}
-# code to get edgelist
-edge_list = tidygraph::activate(network, edges) |>
-  as_tibble()
-
-# assign a number to each individual
-fish_data$num_id = seq(nrow(fish_data))
-
-# attach the fish ids to the edgelist
-fd = fish_data |>
-  select(id, num_id)
-
-edge_list = left_join(edge_list, fd, by = c("from" = "num_id")) |>
-  left_join(fd, by = c("to" = "num_id"))
-
-# add dyad id
-edge_list$dyad_id = sprintf("%s-%s", edge_list$id.x, edge_list$id.y)
-
-edge_list = select(
-  edge_list, -from, -to
+networks = Map(
+  data_nt$data, data_nt$node_data,
+  f = function(reads, nodes) {
+    pr_make_network(
+      block_df = reads,
+      block_ref_df = nodes,
+      time_bin = "5 minutes"
+    )
+  }
 )
 
-# join with theoretical
-edge_list = right_join(
-  edge_list, unique_pairs, by = "dyad_id"
-)
-
-# select useful cols
-edge_list = select(edge_list, from, to, dyad_id, weight)
-
-# assign 0 is weight is NA, ie, no interaction
-edge_list = mutate(
-  edge_list,
-  weight = ifelse(test = is.na(weight), yes = 0, no = weight)
+# save networks
+saveRDS(
+  networks,
+  file = "data/data_networks.Rds"
 )
 ```
 
 ```{r}
 # make a custom layout that is fixed between plots
 # this must be based on an initial network - choose one
-layout = igraph::layout.kamada.kawai(networks[[1]])
+data_nt$networks = networks
+
+layout_1 = igraph::layout.kamada.kawai(data_nt$networks[[1]])
+layout_2 = igraph::layout.kamada.kawai(data_nt$networks[[2]])
+
+data_nt = 
+  mutate(
+    data_nt,
+    layout = lapply(system, function(x) {
+      if(x == 1) layout_1 else layout_2
+    })
+  )
 
 # make plots and wrap
-nt_plots = Map(
-  networks, data_nt$date,
-  f = function(n, d) {
-    pr_plot_network(
-      network = n,
-      colour_by = length_mm,
-      wt_lim = 150,
-      layout = layout
-    ) +
-      scico::scale_fill_scico(
-        palette = "hawaii"
-      )+
-    labs(
-      title = d,
-      fill = "Length (mm)"
-    )+
-    theme(
-      legend.position = "top",
-      legend.key.height = unit(2, "mm")
+plots_nt = Map(
+    data_nt$networks, data_nt$layout, data_nt$date,
+    f = function(n, l, d) {
+      pondr::pr_plot_network(
+        network = n,
+        colour_by = length_mm,
+        wt_lim = 150,
+        layout = l
+      ) +
+        scico::scale_fill_scico(
+          palette = "hawaii"
+        )+
+        labs(
+          title = d,
+          fill = "Length (mm)"
+        )+
+        theme(
+          legend.position = "top",
+          legend.key.height = unit(2, "mm")
+        )
+    }
+  )
+
+# add to df
+data_nt$plots = plots_nt
+```
+
+```{r}
+# save as Rds object
+saveRDS(data_nt, file = "data/data_networks.Rds")
+```
+
+### Plot by system and date
+
+```{r}
+data_plots = nest(
+  data_nt,
+  -system
+)
+```
+
+```{r}
+plot_per_system = Map(
+  data_plots$system, data_plots$data,
+  f = function(d, ndf) {
+    
+    # make plots for each day for one system at a time
+    plots = Map(
+      ndf$networks, ndf$layout, ndf$date,
+      f = function(n, l, dt) {
+        pondr::pr_plot_network(
+          network = n,
+          colour_by = length_mm,
+          layout = l
+        ) +
+          ggtitle(
+            label = dt
+          )
+      }
+    )
+    
+    # combine plots for this system
+    plot_combined = patchwork::wrap_plots(
+      plots, ncol = 5,
+      guides = "collect"
+    ) &
+      theme(
+        legend.position = "top",
+        legend.key.height = unit(2, "mm")
+      )
+    
+    plot_combined
+    
+  }  
+)
+
+# save combined plots
+Map(
+  plot_per_system, seq(length(plot_per_system)),
+  f = function(gg, n) {
+    # save figure
+    ggsave(
+      gg,
+      filename = sprintf("figures/fig_daily_sn_system_%i.png", n),
+      height = 300, width = 410, units = "mm"
     )
   }
 )
+```
 
+
+```{r}
 # wrap all plots
 figure = wrap_plots(
   nt_plots,
