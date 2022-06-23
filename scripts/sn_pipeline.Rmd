@@ -22,33 +22,37 @@ library(patchwork)
 Read file names in data folder.
 
 ```{r}
-files = list.files("data", pattern = "CSV", full.names = TRUE)
+# get data folders
+folders = list.dirs("data", recursive = F)
 
-# read fish data
-fish_data = read_excel("data/Data System 1.xlsx")
+# list csv files for each system, ie, each folder
+files = lapply(folders, function(fl) {
+  list.files(fl, pattern = "CSV", full.names = TRUE)  
+})
 
-unique_pairs = crossing(
-  id.x = fish_data$id,
-  id.y = fish_data$id
-) |>
-  filter(
-    id.x != id.y
-  ) |>
-  mutate(
-    from = pmin(id.x, id.y),
-    to = pmax(id.x, id.y)
-  ) |>
-  distinct(
-    from, to
-  ) |>
-  mutate(
-    dyad_id = sprintf("%s-%s", from, to)
+# get node data by reading excel files from each folder
+# the read excel function is applied to a flexibly constructed
+# file path
+fish_data = Map(folders, seq(length(folders)),
+                f = function(fl, number) {
+  read_excel(
+    path = sprintf("%s/Data System %i.xlsx", fl, number)
   )
+})
 ```
 
 ```{r}
 # read data and rename columns
-data = lapply(files, read_delim, delim = ";")
+data = Map(
+  files, seq(length(files)),
+  f = function(fl, num) {
+    lapply(fl, read_delim, delim = ";") |>
+      bind_rows() |> 
+      mutate(
+        system = num
+      )
+  })
+
 data = lapply(data, function(df) {
   rename(
     df,
@@ -58,7 +62,18 @@ data = lapply(data, function(df) {
 })
 
 # clean the data using a pondr function
-data = lapply(data, pondr::pr_clean_data, block_ref_df = fish_data)
+data = Map(data, fish_data, f = function(reads, nodes) {
+  pondr::pr_clean_data(reads, block_ref_df = nodes)
+})
+
+# add system id
+data = Map(
+  data, seq(length(data)),
+  f = function(df, num) {
+    df$system = num
+    df
+  }
+)
 ```
 
 It is very important to clean the data before making networks, as the network construction fails when it finds nodes (fish) in the edge list, that are not in the node list. This happens when there are errors in tag reading, introducing a new tag code into the edgelist that is not among the tags in the node data.
@@ -70,18 +85,19 @@ data_nt = bind_rows(data) %>%
     date = date(time)
   ) %>%
   nest_by(
-    date
+    date, system
   )
 
 # get an example daily network, time bin is 5 seconds by default
-network = pr_make_network(data_nt$data[[1]], block_ref_df = fish_data)
+networks = lapply(data_nt$data, pr_make_network, 
+                  block_ref_df = fish_data, time_bin = "5 minutes")
 ```
 
 ## Getting Zero Weight Interactions
 
 ```{r}
 # code to get edgelist
-edge_list = tidygraph::activate(networks, edges) |>
+edge_list = tidygraph::activate(network, edges) |>
   as_tibble()
 
 # assign a number to each individual
